@@ -123,12 +123,23 @@ namespace System.IO.Pipes
 
             ArgumentOutOfRangeException.ThrowIfLessThan(timeout, Timeout.Infinite);
 
-            ConnectInternal(timeout, CancellationToken.None, Environment.TickCount);
+            TryConnectInternal(timeout, CancellationToken.None, Environment.TickCount, true);
         }
 
         public void Connect(TimeSpan timeout) => Connect(ToTimeoutMilliseconds(timeout));
 
-        private void ConnectInternal(int timeout, CancellationToken cancellationToken, int startTime)
+        public void TryConnect(int timeout)
+        {
+            CheckConnectOperationsClient();
+
+            ArgumentOutOfRangeException.ThrowIfLessThan(timeout, Timeout.Infinite);
+
+            return TryConnectInternal(timeout, CancellationToken.None, Environment.TickCount, false);
+        }
+
+        public void TryConnect(TimeSpan timeout) => TryConnect(ToTimeoutMilliseconds(timeout));
+
+        private bool TryConnectInternal(int timeout, CancellationToken cancellationToken, int startTime, bool throwOnTimeout)
         {
             // This is the main connection loop. It will loop until the timeout expires.
             int elapsed = 0;
@@ -158,7 +169,12 @@ namespace System.IO.Pipes
             }
             while (timeout == Timeout.Infinite || (elapsed = unchecked(Environment.TickCount - startTime)) < timeout);
 
-            throw new TimeoutException();
+            if (throwOnTimeout)
+            {
+                throw new TimeoutException();
+            }
+
+            return false;
         }
 
         public Task ConnectAsync()
@@ -178,7 +194,22 @@ namespace System.IO.Pipes
             return ConnectAsync(Timeout.Infinite, cancellationToken);
         }
 
-        public Task ConnectAsync(int timeout, CancellationToken cancellationToken)
+        public Task<bool> TryConnectAsync(int timeout) =>
+            TryConnectAsync(timeout, CancellationToken.None);
+
+        public Task TryConnectAsync(CancellationToken cancellationToken) =>
+            TryConnectAsync(Timeout.Infinite, cancellationToken);
+
+        public Task<bool> TryConnectAsync(int timeout, CancellationToken cancellationToken) =>
+            TryConnectInternalAsync(timeout, false, cancellationToken);
+
+        public Task ConnectAsync(TimeSpan timeout, CancellationToken cancellationToken = default) =>
+            TryConnectInteranlAsync(ToTimeoutMilliseconds(timeout), true, cancellationToken);
+
+        public Task<bool> TryConnectAsync(TimeSpan timeout, CancellationToken cancellationToken = default) =>
+            TryConnectAsync(ToTimeoutMilliseconds(timeout), cancellationToken);
+
+        private Task<bool> TryConnectInternalAsync(int timeout, bool throwOnTimeout, CancellationToken cancellationToken)
         {
             CheckConnectOperationsClient();
 
@@ -191,15 +222,20 @@ namespace System.IO.Pipes
 
             int startTime = Environment.TickCount; // We need to measure time here, not in the lambda
 
-            return Task.Factory.StartNew(static state =>
+            return Task.Factory.StartNew(static async state =>
             {
                 var tuple = ((NamedPipeClientStream stream, int timeout, CancellationToken cancellationToken, int startTime))state!;
-                tuple.stream.ConnectInternal(tuple.timeout, tuple.cancellationToken, tuple.startTime);
+
+                if (throwOnTimeout)
+                {
+                    return tuple.stream.ConnectInternal(tuple.timeout, tuple.cancellationToken, tuple.startTime);
+                }
+                else
+                {
+                    return tuple.stream.TryConnectInternal(tuple.timeout, tuple.cancellationToken, tuple.startTime);
+                }
             }, (this, timeout, cancellationToken, startTime), cancellationToken, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
         }
-
-        public Task ConnectAsync(TimeSpan timeout, CancellationToken cancellationToken = default) =>
-            ConnectAsync(ToTimeoutMilliseconds(timeout), cancellationToken);
 
         private static int ToTimeoutMilliseconds(TimeSpan timeout)
         {
